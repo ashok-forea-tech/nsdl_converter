@@ -1,0 +1,45 @@
+name: Build Windows executable
+
+# Builds NSDL_CAS_Converter.exe on GitHub's own Windows runner, so nobody
+# has to have Python installed locally to get the double-click app.
+#
+# - On every push/PR that touches the app, builds the exe and attaches it
+#   as a downloadable workflow artifact (Actions tab -> the run -> Artifacts).
+# - On a pushed tag like "v1.0.0", also publishes the exe as a GitHub
+#   Release asset.
+
+on:
+  push:
+    branches: [ main ]
+    tags: [ 'v*' ]
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch: {}
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Build exe
+        run: pyinstaller --onefile --windowed --name NSDL_CAS_Converter nsdl_cas_converter.py
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: NSDL_CAS_Converter-windows
+          path: dist/NSDL_CAS_Converter.exe
+
+      - name: Publish to GitHub Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/NSDL_CAS_Converter.exe

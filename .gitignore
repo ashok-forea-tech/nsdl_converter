@@ -1,0 +1,19 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+build/
+dist/
+*.spec
+
+# Never commit real statements or their converted output -- these contain
+# personal financial data (holdings, folio numbers, PAN, account numbers).
+*.pdf
+*.xlsx
+
+# OS/editor cruft
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
