@@ -106,6 +106,15 @@ machine — there is no network code in this tool at all.
 - `nsdl_cas_converter.py` — CLI + Tkinter GUI entry point, plus the
   reconciliation checks.
 
+## Utilities
+
+`test_pdf/decrypt-pdf.py` — standalone helper to remove password
+protection from a CAS PDF, producing a plain, unlocked copy:
+```
+python test_pdf/decrypt-pdf.py statement.pdf mypassword
+```
+Writes `statement_decrypt.pdf` alongside the input file.
+
 ## Known limitations
 
 - Tested against NSDL's standard CAS layout (the one shown in this
