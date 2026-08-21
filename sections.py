@@ -78,11 +78,27 @@ TABLE_DEFS = {
     },
 }
 
+# Older (circa 2016) statements print a much simpler Mutual Fund Folios table with no
+# cost-basis/unrealised-P&L columns at all -- just ISIN/UCC, ISIN Description, Folio No.,
+# No. of Units, NAV and Value. None of the standard definition's 'Average'/'Total'/
+# 'Unrealised'/'Annualised' anchor words exist in this header, so those columns are never
+# created and the row data that would have landed in them (NAV, Value) instead spills into
+# whichever column is rightmost (No. of Units), garbling it -- while 'Current Value' stays
+# permanently empty, undercounting the whole sheet to 0.
+MF_FOLIOS_LEGACY_LABELS = [
+    ('ISIN', 'ISIN/UCC'), ('ISIN', 'ISIN Description'), ('Folio', 'Folio No.'),
+    ('No.', 'No. of Units'), ('NAV', 'Current NAV/unit'), ('Value', 'Current Value'),
+]
+MF_FOLIOS_LEGACY_KINDS = {'Folio No.': 'num_int', 'No. of Units': 'num_dec',
+                          'Current NAV/unit': 'num_dec', 'Current Value': 'num_dec'}
 
-def find_header_columns(lines, start_idx, table_key):
+
+def find_header_columns(lines, start_idx, table_key, label_defs=None):
     """Look at lines[start_idx: start_idx+3] for the header words of this table type
-    and build ColumnSpec list. Returns (columns, line_idx_after_header) or (None, start_idx)."""
-    defn = TABLE_DEFS[table_key]
+    and build ColumnSpec list. Returns (columns, line_idx_after_header) or (None, start_idx).
+    label_defs overrides TABLE_DEFS[table_key], for tables with more than one known
+    historical header layout (e.g. mf_folios)."""
+    defn = label_defs if label_defs is not None else TABLE_DEFS[table_key]
     header_words = []
     idx = start_idx
     target_names = set(n for _, n in defn['header_labels'])
@@ -343,7 +359,13 @@ def parse_document(doc):
                             mode = None
                         i = next_idx
                         continue
-                    cols, after_idx = find_header_columns(lines, i, mode)
+                    label_defs = None
+                    if mode == 'mf_folios':
+                        peek_words = lines[i]['words'] + (lines[i + 1]['words'] if i + 1 < len(lines) else [])
+                        if not any(w['text'] == 'Average' for w in peek_words):
+                            label_defs = {'header_labels': MF_FOLIOS_LEGACY_LABELS,
+                                          'kinds': MF_FOLIOS_LEGACY_KINDS}
+                    cols, after_idx = find_header_columns(lines, i, mode, label_defs)
                     if cols:
                         rows, subtotal, next_idx, terminated = extract_table_rows(
                             lines, after_idx, cols, defn['anchor_col'])
