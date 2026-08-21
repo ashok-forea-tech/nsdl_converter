@@ -84,21 +84,37 @@ def find_header_columns(lines, start_idx, table_key):
     and build ColumnSpec list. Returns (columns, line_idx_after_header) or (None, start_idx)."""
     defn = TABLE_DEFS[table_key]
     header_words = []
-    scanned = 0
     idx = start_idx
-    # Header for these tables is always exactly 2 physical lines
-    while idx < len(lines) and scanned < 3:
+    target_names = set(n for _, n in defn['header_labels'])
+    # Header for these tables is normally 2 physical lines, occasionally 3. A label's
+    # text can legitimately repeat across columns (e.g. "Value" appears both inside
+    # "Face Value" and as the far-right "... Value" column that build_columns' cursor
+    # logic is meant to disambiguate) -- so seeing every requested label's TEXT at
+    # least once does not by itself mean the header is fully collected. Stopping right
+    # then, before the real final occurrence of a repeated label has even been read,
+    # silently drops that column from build_columns entirely. Only stop once every
+    # label has been seen AND the next line actually looks like a data row (starts
+    # with this table's ISIN-style anchor) OR is itself the table's stop line (a
+    # repeated header at a page break can be followed immediately by "Sub Total"
+    # with zero new rows in between -- treating that as "still more header to
+    # read" would swallow the stop line itself, and with it the section boundary,
+    # silently running the row collector on into the NEXT section's data) --
+    # otherwise keep consuming, up to the 3-line cap.
+    while idx < len(lines) and idx - start_idx < 3:
         header_words.extend(lines[idx]['words'])
-        scanned += 1
-        # Stop once we've collected words for all target labels at least once
+        idx += 1
         found_names = set()
         for label, out_name in defn['header_labels']:
             if any(w['text'] == label for w in header_words):
                 found_names.add(out_name)
-        if len(found_names) >= len(set(n for _, n in defn['header_labels'])):
-            idx += 1
-            break
-        idx += 1
+        if found_names >= target_names:
+            if idx >= len(lines):
+                break
+            next_text = lines[idx]['text']
+            next_words = lines[idx]['words']
+            next_first = next_words[0]['text'] if next_words else ''
+            if ISIN_RE.match(next_first) or next_first == 'NOT' or is_stop_line(next_text):
+                break
     cols = build_columns(header_words, defn['header_labels'], defn['kinds'])
     if len(cols) < 3:
         return None, start_idx
@@ -211,8 +227,14 @@ def extract_table_rows(lines, header_end_idx, columns, anchor_col_name):
             break
         row_words.extend(lines[idx]['words'])
         idx += 1
+    # NSDL prints the literal placeholder "NOT AVAILABLE" in the ISIN/ISIN-UCC column for
+    # a folio/holding that hasn't been assigned an ISIN yet, instead of a real ISIN. Its
+    # anchor word is "NOT" (the first token of that phrase). Without recognising it as a
+    # row-start too, such a row's anchor test never fires, so its words get silently
+    # folded into the PREVIOUS row's fields as if they were a continuation -- concatenating
+    # two unrelated folios' amounts together into one garbled number.
     rows = group_rows_by_anchor(row_words, columns, anchor_col_name,
-                                 lambda t: bool(ISIN_RE.match(t)))
+                                 lambda t: bool(ISIN_RE.match(t)) or t == 'NOT')
     return rows, subtotal, idx, terminated
 
 
