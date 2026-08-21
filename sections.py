@@ -111,6 +111,82 @@ def is_stop_line(text):
         t.startswith('Total Expense Ratio')
 
 
+# ---------------------------------------------------------------------------
+# CDSL demat accounts print Equities / Mutual Funds / Alternate Investment Fund holdings
+# in a completely different table layout from NSDL accounts: instead of
+# "ISIN | Company/Description | No. of Shares/Units | NAV/Market Price | Value" it prints
+# "ISIN | SECURITY | Current Bal. | Safekeep Bal. | Pledged Bal. | Market Price | Value",
+# with the row's Current/Safekeep/Pledged balance breakdown re-stated across two more
+# physical sub-lines (Free/Locked-in/Earmarked, then Lent/Pledge-setup/Pledgee) that sit
+# at the SAME x-positions as line 1's balances -- these are not wrapped continuations of
+# the same value, they are different figures, and must not be concatenated onto it.
+# ---------------------------------------------------------------------------
+
+CDSL_HOLDINGS_LABELS = [
+    ('ISIN', 'ISIN'), ('SECURITY', '_name'), ('Current', '_qty'),
+    ('Safekeep', '_ignore1'), ('Pledged', '_ignore2'), ('Market', '_price'), ('Value', 'Value'),
+]
+CDSL_HOLDINGS_KINDS = {'_qty': 'num_dec', '_ignore1': 'num_dec', '_ignore2': 'num_dec',
+                        '_price': 'num_dec', 'Value': 'num_dec'}
+
+# Maps the generic CDSL temp field names to each asset class's real NSDL-style output
+# column names, so both layouts land in the same Excel columns.
+CDSL_FIELD_MAP = {
+    'equities': {'_name': 'Company Name', '_qty': 'No. of Shares', '_price': 'Market Price'},
+    'preference': {'_name': 'Company Name', '_qty': 'No. of Shares', '_price': 'Market Price/Unit'},
+    'mf_holdings': {'_name': 'ISIN Description', '_qty': 'No. of Units', '_price': 'NAV'},
+    'aif': {'_name': 'ISIN Description', '_qty': 'No. of Units', '_price': 'NAV'},
+}
+
+
+def is_cdsl_holdings_header(line_words):
+    return any(w['text'] == 'SECURITY' for w in line_words)
+
+
+def extract_cdsl_holdings_rows(lines, header_end_idx, columns):
+    """Only the first physical line of each entry carries the values we want (ISIN, name
+    start, Quantity, Price, Value). Later physical lines contribute additional wrapped
+    security-name text and/or the balance-breakdown figures -- the breakdown numbers are
+    discarded (position-matched into a numeric column but never merged), only TEXT-column
+    words (the wrapped name) are carried forward, exactly mirroring how NSDL's own
+    multi-line company/fund names wrap, but without corrupting the numeric columns the way
+    a blind same-column concatenation would.
+    """
+    rows = []
+    idx = header_end_idx
+    subtotal = None
+    terminated = False
+    current = None
+    while idx < len(lines):
+        text = lines[idx]['text']
+        if is_stop_line(text):
+            m = re.search(r'([\d,]+\.\d{2})\s*$', text)
+            if m:
+                subtotal = to_number(m.group(1))
+            idx += 1
+            terminated = True
+            break
+        line_words = lines[idx]['words']
+        starts_new = bool(line_words) and bool(ISIN_RE.match(line_words[0]['text']))
+        if starts_new:
+            if current is not None:
+                rows.append(current)
+            current = {c.name: '' for c in columns}
+            for w in line_words:
+                col = assign_column(w, columns)
+                sep = '' if col.kind in ('num', 'num_int', 'num_dec') else ' '
+                current[col.name] = (current[col.name] + sep + w['text']) if current[col.name] else w['text']
+        elif current is not None:
+            for w in line_words:
+                col = assign_column(w, columns)
+                if col.kind == 'text':
+                    current[col.name] = (current[col.name] + ' ' + w['text']) if current[col.name] else w['text']
+        idx += 1
+    if current is not None:
+        rows.append(current)
+    return rows, subtotal, idx, terminated
+
+
 def extract_table_rows(lines, header_end_idx, columns, anchor_col_name):
     """Collect rows from lines[header_end_idx:] until a stop line.
     Returns (rows, subtotal, next_idx, terminated) -- `terminated` is True only when an
@@ -221,9 +297,30 @@ def parse_document(doc):
             # If current mode's header appears here, parse the table
             if mode in TABLE_DEFS:
                 defn = TABLE_DEFS[mode]
-                probe_words = lines[i]['words'] + (lines[i + 1]['words'] if i + 1 < len(lines) else [])
                 first_label = defn['header_labels'][0][0]
                 if any(w['text'] == first_label for w in lines[i]['words']):
+                    if mode in CDSL_FIELD_MAP and is_cdsl_holdings_header(lines[i]['words']):
+                        field_map = CDSL_FIELD_MAP[mode]
+                        cols = build_columns(lines[i]['words'], CDSL_HOLDINGS_LABELS, CDSL_HOLDINGS_KINDS)
+                        rows, subtotal, next_idx, terminated = extract_cdsl_holdings_rows(
+                            lines, i + 3, cols)
+                        for raw in rows:
+                            raw = {k: v.strip() for k, v in raw.items()}
+                            if not raw.get('ISIN'):
+                                continue
+                            r = {'ISIN': raw['ISIN'], 'Value': raw.get('Value', '')}
+                            for tmp_key, out_name in field_map.items():
+                                r[out_name] = raw.get(tmp_key, '')
+                            r['account'] = current_account
+                            r['holder'] = current_holder
+                            r['pan'] = current_pan
+                            r['asset_class'] = mode
+                            r['_subtotal_of_page'] = subtotal
+                            holdings.append(r)
+                        if terminated:
+                            mode = None
+                        i = next_idx
+                        continue
                     cols, after_idx = find_header_columns(lines, i, mode)
                     if cols:
                         rows, subtotal, next_idx, terminated = extract_table_rows(
@@ -282,6 +379,8 @@ def parse_demat_transactions(doc):
     current_isin = None
     current_company = None
     columns = None
+    cdsl_balance_mode = False
+    prev_balance = None
     for pidx in range(doc.n_pages):
         lines = cluster_lines(doc.pages_words[pidx])
         i = 0
@@ -293,6 +392,8 @@ def parse_demat_transactions(doc):
                 # stale current_isin cause anything after this point to be collected.
                 current_isin = None
                 columns = None
+                cdsl_balance_mode = False
+                prev_balance = None
                 i += 1
                 continue
 
@@ -316,6 +417,7 @@ def parse_demat_transactions(doc):
             m = ISIN_HEADER_RE.match(text)
             if m:
                 current_isin, current_company = m.group(1), m.group(2)
+                prev_balance = None  # CDSL's running balance is per-ISIN, not per-account
                 i += 1
                 continue
 
@@ -332,6 +434,43 @@ def parse_demat_transactions(doc):
                 kinds = {'Order No': 'num_int', 'Opening Balance': 'num_dec', 'Debit': 'num_dec',
                          'Credit': 'num_dec', 'Closing Balance': 'num_dec'}
                 columns = build_columns(header_words, labels, kinds)
+                cdsl_balance_mode = False
+                i += 2
+                continue
+
+            # CDSL demat accounts use a different ledger layout entirely: one running
+            # "Current Balance" per row instead of separate Opening/Closing Balance
+            # columns, and no 'Order' column at all (so the check above never matches).
+            # Reusing NSDL's stale column boundaries here (the original bug) silently
+            # misparses every CDSL row under the wrong column names.
+            if lines[i]['words'] and lines[i]['words'][0]['text'] == 'Date' \
+                    and any(w['text'] == 'Particulars' for w in lines[i]['words']):
+                header_words = list(lines[i]['words'])
+                if i + 1 < len(lines):
+                    header_words += lines[i + 1]['words']  # 'Balance' sits one line below
+                if i - 1 >= 0:
+                    header_words += lines[i - 1]['words']  # 'Current' sits one line above
+                labels = [('Date', 'Date'), ('Transaction', 'Description'), ('Credit', 'Credit'),
+                          ('Debit', 'Debit'), ('Current', 'Balance')]
+                kinds = {'Credit': 'num_dec', 'Debit': 'num_dec', 'Balance': 'num_dec'}
+                columns = build_columns(header_words, labels, kinds)
+                # The generic midpoint-of-anchors boundary badly underestimates how far
+                # right the free-flowing Particulars text actually runs (it packs order
+                # references, counterparty BO IDs etc. onto one line, right up against
+                # where Credit's numbers start) -- a bare numeric reference token like
+                # "1211232024169" then lands inside the Credit column purely by position.
+                # Pin the Description/Credit boundary to Credit's real header position
+                # instead of the midpoint, which is where the data columns actually begin.
+                credit_anchors = [w['x0'] for w in header_words if w['text'] == 'Credit']
+                if credit_anchors:
+                    boundary = min(credit_anchors) - 5
+                    for c in columns:
+                        if c.name == 'Description':
+                            c.x1 = boundary
+                        elif c.name == 'Credit':
+                            c.x0 = boundary
+                cdsl_balance_mode = True
+                prev_balance = None
                 i += 2
                 continue
 
@@ -355,6 +494,33 @@ def parse_demat_transactions(doc):
                                              lambda t: bool(DATE_RE.match(t)))
                 for r in rows:
                     r = {k: v.strip() for k, v in r.items()}
+                    if cdsl_balance_mode:
+                        # CDSL prints a running Current Balance per row (plus explicit
+                        # "Opening Balance" / "Closing Balance" bookend rows) rather than
+                        # NSDL's Opening/Closing Balance pair on every row. Derive the same
+                        # Opening -> Debit/Credit -> Closing shape by carrying the previous
+                        # row's balance forward, so both layouts reconcile identically and
+                        # land in the same sheet columns.
+                        desc = r.get('Description', '').strip()
+                        bal = to_number(r.get('Balance'))
+                        if desc in ('Opening Balance', 'Closing Balance'):
+                            prev_balance = bal
+                            continue
+                        r = {
+                            'Date': r.get('Date', ''),
+                            'Order No': '',
+                            'Description': desc,
+                            'Instruction Details': '',
+                            'Opening Balance': f'{prev_balance:.3f}' if prev_balance is not None else '0.000',
+                            # CDSL leaves whichever of Debit/Credit doesn't apply blank
+                            # (unlike NSDL, which always prints an explicit "0.000"/"0"
+                            # placeholder); normalise to match, since a blank string reads
+                            # as unparseable ("None") downstream, not as zero.
+                            'Debit': r.get('Debit') or '0.000',
+                            'Credit': r.get('Credit') or '0.000',
+                            'Closing Balance': r.get('Balance', ''),
+                        }
+                        prev_balance = bal
                     r['account'] = current_account
                     r['holder'] = current_holder
                     r['ISIN'] = current_isin

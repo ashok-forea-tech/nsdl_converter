@@ -34,7 +34,14 @@ import io
 from dataclasses import dataclass, field
 
 
-ISIN_RE = re.compile(r'^(INE|INF|IN0)[A-Z0-9]{9}$')
+# Standard ISIN format: 'IN' (India's country code) + 10 more alphanumeric characters
+# (issuer + security identifier + check digit) = 12 chars total. The third character
+# varies by instrument/registration type (E=equity, F=mutual fund, 0=govt securities,
+# 8=rights/renunciation entitlements, and others) -- an earlier version only recognised
+# INE/INF/IN0, which silently dropped whole holding rows for any other prefix (their
+# anchor test failed, so the row's words were swept in as a "continuation" of the
+# previous row and its numeric Value was discarded).
+ISIN_RE = re.compile(r'^IN[A-Z0-9]{10}$')
 NUMERIC_RE = re.compile(r'^-?[\d,]+\.?\d*$')
 DATE_RE = re.compile(r'^\d{2}-[A-Za-z]{3}-\d{4}$')
 
