@@ -115,11 +115,29 @@ python utils/decrypt-pdf.py statement.pdf mypassword
 ```
 Writes `statement_decrypt.pdf` alongside the input file.
 
+## Running tests
+
+Regression tests run against small, synthetic fixture PDFs in
+`test_fixtures/` — fabricated data (fake PAN, names, account numbers,
+ISINs, amounts), each engineered to reproduce one specific real-world
+layout or edge case the parser has to handle correctly:
+
+```
+pip install -r requirements-dev.txt
+pytest tests/
+```
+
+`tests/generate_fixtures.py` (re)generates the fixture PDFs if you
+need to add a new one — see `tests/pdf_builder.py` for the builder.
+
 ## Known limitations
 
-- Tested against NSDL's standard CAS layout (the one shown in this
-  README). Other RTAs' consolidated statement formats (e.g. CDSL's)
-  use a different layout and are not currently supported.
+- Tested against NSDL CAS statements, including their common layout
+  variations — NSDL- and CDSL-registered demat sub-accounts (each
+  prints holdings/transactions in its own distinct column layout,
+  both handled), and older (pre-2017) statement formats. A
+  standalone CDSL-*issued* CAS (a different top-level document from a
+  different RTA) has not been tested.
 - The password-unlock step assumes a standard PDF user-password
   encryption; unusual protection schemes may not open.
 - If NSDL changes their statement's column layout, extraction may

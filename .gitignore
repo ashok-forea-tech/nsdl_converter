@@ -15,6 +15,9 @@ venv/
 *.xlsx
 *.XLSX
 
+# ...except the synthetic, fabricated-data regression fixtures.
+!test_fixtures/*.pdf
+
 # OS/editor cruft
 .DS_Store
 Thumbs.db
