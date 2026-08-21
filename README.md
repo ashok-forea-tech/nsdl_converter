@@ -108,10 +108,10 @@ machine — there is no network code in this tool at all.
 
 ## Utilities
 
-`test_pdf/decrypt-pdf.py` — standalone helper to remove password
+`utils/decrypt-pdf.py` — standalone helper to remove password
 protection from a CAS PDF, producing a plain, unlocked copy:
 ```
-python test_pdf/decrypt-pdf.py statement.pdf mypassword
+python utils/decrypt-pdf.py statement.pdf mypassword
 ```
 Writes `statement_decrypt.pdf` alongside the input file.
 
